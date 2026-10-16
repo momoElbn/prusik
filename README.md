@@ -110,7 +110,7 @@ flowchart LR
 
 ```bash
 # install the single binary (macOS, Linux, Windows)
-go install github.com/OWNER/prusik@latest
+go install github.com/momoElbn/prusik@latest
 
 # protect a Postgres database and connect your agent
 prusik init --db "$PROD_DATABASE_URL"
