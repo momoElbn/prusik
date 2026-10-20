@@ -14,7 +14,7 @@
 [![MCP](https://img.shields.io/badge/MCP-server-2E1065)](#works-with)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-7C3AED)](#contributing)
 
-[How it works](#how-it-works) · [Features](#features) · [Works with](#works-with) · [Policies](#policies) · [Roadmap](#roadmap) · [Contributing](#contributing)
+[How it works](#how-it-works) · [Features](#features) · [Works with](#works-with) · [Models](#models) · [Roadmap](#roadmap) · [Contributing](#contributing)
 
 </div>
 
@@ -30,7 +30,9 @@ AI coding agents now get the keys to real systems: the production database, the 
 
 Prusik sits between the agent and production. Like the climbing knot it's named after, it **slides** freely while the agent works and **grips** the moment something dangerous happens.
 
-- **Reads pass straight through.** No slowdown for normal work.
+- **Nothing to configure.** Install it, hook it into the agent you already use, and that's it. No YAML, no flags.
+- **An AI judges every command in context** before it runs, on top of hard rules it can never go below.
+- **Known-safe commands skip the AI.** A built-in catalogue of read-only commands (`ls`, `git status`, `SELECT`…) passes straight through with no delay, so nothing about how you work changes.
 - **Writes are snapshotted first**, and the snapshot is stored where the agent can't reach it.
 - **Destructive actions wait for a human "yes"** on your phone, with a plain-English explanation.
 - **Anything can be undone** with `prusik undo`.
@@ -40,7 +42,7 @@ Prusik sits between the agent and production. Like the climbing knot it's named 
 ```mermaid
 flowchart LR
     A[AI coding agent] -->|shell command or tool call| H[Prusik hook / MCP server]
-    H --> C{Classify risk}
+    H --> C{Hard-rule floor, safe catalogue, AI judge}
     C -->|Safe: read| OK[Allow]
     C -->|Risky: write| S[Snapshot → allow → log]
     C -->|Dangerous: drop, delete| Q[Snapshot → ask a human]
@@ -56,8 +58,8 @@ flowchart LR
 
 **Example:** the agent decides to "clean up old test users" and runs `DELETE FROM users WHERE created_at < '2026-01-01'`.
 
-1. The hook catches the command, and the SQL parser sees a `DELETE` on a production table.
-2. A dry run estimates **48,212 rows**, including paying customers, so it's classified as **Dangerous**.
+1. The hook catches the command. Prusik already knows the database is production (it found it in the agent's environment; you never told it).
+2. The AI judge reads the command in context: a `DELETE` on a production table, with a dry run estimating **48,212 rows**, including paying customers, for a task that said "test users". It grades it **Dangerous**.
 3. Prusik saves a snapshot and pings your phone: *"Claude Code wants to delete 48,212 users. Snapshot saved. Approve / Deny."*
 4. You tap **Deny**. The agent is told why and narrows the query to `AND is_test = true` (212 rows), which runs automatically after a snapshot.
 5. It's all in the audit log, and `prusik undo 7f3a` would restore those 212 rows.
@@ -66,12 +68,15 @@ flowchart LR
 
 | | Feature | What it does |
 |---|---|---|
-| 🧭 | **Risk classifier** | Deterministic parsers first (SQL syntax tree, cloud API actions). A small LLM only steps in for unclear cases and writes the explanation. It runs locally with Ollama or with any API key. |
+| 🧭 | **AI judge** | An AI model reads every command in context (what the agent said it's doing, the project, recent commands, the parsed SQL or shell) and grades it before it runs, with a plain-English reason. |
+| 📖 | **Safe-command catalogue** | Known-safe commands for shell, git, Postgres and cloud CLIs are matched exactly and allowed without a model call. Anything unlisted, or touching something sensitive like `.env`, goes to the AI. |
+| 🧱 | **Hard-rule floor** | A few built-in rules the AI can never go below: deleting backups is always forbidden, `DROP` on production is always at least dangerous. The strictest check wins. |
+| 🦙 | **Local or cloud models** | Runs locally through [Ollama](https://ollama.com) by default, so your commands stay on your machine. Prefer a cloud model? Switch with one command. |
 | 📸 | **Automatic snapshots** | Neon / Supabase branching, `pg_dump` to S3, RDS snapshots and S3 versioning, all taken before any risky change. |
 | 📱 | **Human approval** | CLI prompt, Telegram, Slack or ntfy push, with a one-line explanation of what will happen. |
 | ↩️ | **One-command undo** | `prusik undo <id>` restores the snapshot. |
 | 🔑 | **No real keys for agents** | A credential broker hands out short-lived, least-privilege credentials (AWS STS, scoped Postgres roles). |
-| 📜 | **Policies as code** | Plain YAML rules, with community policy packs for Postgres, Supabase, AWS and Terraform. |
+| ⚡ | **Zero config** | No YAML files and no flags. Prusik finds your database, tells production from dev and picks the snapshot method on its own. |
 | 🧾 | **Audit log** | SQLite or JSONL with an OpenTelemetry export: *"what did the agent do last night?"* |
 | ☁️ | **Scales to zero** | Runs on your laptop next to the agent, or as a serverless function that costs nothing when idle. |
 
@@ -101,58 +106,58 @@ flowchart LR
 ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-425CC7?style=flat-square&logo=opentelemetry&logoColor=white)
 ![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white)
 ![Slack](https://img.shields.io/badge/Slack-4A154B?style=flat-square&logo=slack&logoColor=white)
-![YAML](https://img.shields.io/badge/YAML-CB171E?style=flat-square&logo=yaml&logoColor=white)
 
 ## Quick start
 
 > [!NOTE]
 > Prusik is in early development. The commands below show the planned v0.1 interface.
 
+Two commands, and you're roped in:
+
 ```bash
-# install the single binary (macOS, Linux, Windows)
+# install once (macOS, Linux, Windows)
 go install github.com/momoElbn/prusik@latest
 
-# protect a Postgres database and connect your agent
-prusik init --db "$PROD_DATABASE_URL"
+# hook it into your agent
 prusik hook install claude-code     # or: codex, cursor, opencode
-
-# day to day
-prusik approve 7f3a                 # approve a held action from the CLI
-prusik undo 7f3a                    # restore the snapshot taken before an action
-prusik policy test policy.yaml      # check your rules against sample actions
+# ✓ Prusik now judges every command before it runs
 ```
 
-## Policies
+That's it. No `init`, no `--db`, no config file: keep working the way you already do. Prusik finds the database from your agent's environment, treats anything it can't place as production, and starts itself when the agent needs it.
 
-Rules are plain YAML, readable in a code review:
+When Prusik holds something, you'll see it:
 
-```yaml
-# policy.yaml
-environment: prod
-rules:
-  - match: { sql: [SELECT] }
-    action: allow
-  - match: { sql: [INSERT, UPDATE] }
-    action: snapshot
-  - match: { sql: [DELETE], rows_over: 100 }
-    action: ask              # snapshot, then wait for a human
-  - match: { sql: [DROP, TRUNCATE] }
-    action: ask
-  - match: { target: backups }
-    action: forbid           # never, whoever asks
+```bash
+prusik approve 7f3a                 # approve a held action from the terminal
+prusik undo 7f3a --dry-run          # see what restoring the snapshot would change
+prusik undo 7f3a                    # restore it
 ```
+
+## Models
+
+The AI judge runs **locally through Ollama by default**: `prusik hook install` checks for Ollama and pulls a small default model, and your commands never leave your machine.
+
+Cloud models are an option if you'd rather not run a model locally:
+
+```bash
+prusik model use ollama/<model>        # another local model
+prusik model use anthropic/<model>     # or a cloud model, with your own API key
+```
+
+Whatever the model says, the hard rules still apply: the AI can make a command stricter, never looser. If the model can't be reached, Prusik fails closed and asks you.
 
 ## Roadmap
 
-- [ ] **v0.1 "It catches it":** Go CLI, Claude Code hook, SQL classifier, Neon / Supabase / `pg_dump` snapshots, CLI approval, `undo`
+- [ ] **v0.1 "It catches it":** zero-config Go CLI, Claude Code hook, AI judge (Ollama or cloud) over hard rules, Neon / Supabase / `pg_dump` snapshots, CLI approval, `undo`
 - [ ] **v0.2 "Phone in hand":** MCP server, Telegram / Slack approver on serverless, audit log
 - [ ] **v0.3 "No keys for agents":** credential broker for Postgres and AWS STS
-- [ ] **v0.4 "Measured":** SafeOps-Bench, an open eval suite and leaderboard of how well models and guards catch dangerous actions
-- [ ] **v1.0:** Postgres wire proxy, GCP and Azure, policy-pack registry
+- [ ] **v0.4 "Measured":** SafeOps-Bench, an open eval suite and leaderboard of which models make the safest judge
+- [ ] **v0.5 "Learned":** a fine-tuned classifier (ONNX, runs locally in ~10 ms) that answers first, so the bigger model only sees unsure cases
+- [ ] **v1.0:** Postgres wire proxy, GCP and Azure
 
 ## Contributing
 
-Contributions are welcome, especially **policy packs** (new databases, clouds and IaC tools) and labeled examples for SafeOps-Bench. Look for issues tagged `good first issue`, and open a discussion before larger changes.
+Contributions are welcome, especially **safe-command catalogue entries**, **hard rules** for new databases, clouds and IaC tools, and labeled examples for SafeOps-Bench that test the AI judge. Look for issues tagged `good first issue`, and open a discussion before larger changes.
 
 ## Why "Prusik"?
 
@@ -161,3 +166,4 @@ A [Prusik](https://en.wikipedia.org/wiki/Prusik) is a climbing friction knot. It
 ## License
 
 [Apache-2.0](LICENSE). The Prusik name and logo are trademarks of the project.
+
